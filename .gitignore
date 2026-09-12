@@ -1,0 +1,7 @@
+logs/
+server/data/
+server/inventory-server
+server/inventory-server.exe
+__pycache__/
+*.pyc
+.env
