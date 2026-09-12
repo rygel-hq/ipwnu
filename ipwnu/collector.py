@@ -8,12 +8,15 @@ Collected data:
 
 Delivery, in priority order:
   1. INVENTORY_ENDPOINT (defaults to DEFAULT_ENDPOINT when unset): POST the
-     report to the Go inventory server, authenticated with INVENTORY_API_KEY.
-  2. GITHUB_TOKEN, as a fallback when no API key is available: upload the
-     report as a (secret) GitHub gist.
+     report to the Go inventory server, authenticated with INVENTORY_API_KEY
+     (which defaults to the embedded DEFAULT_API_KEY).
+  2. GITHUB_TOKEN, when no endpoint is configured: upload the report as a
+     (secret) GitHub gist.
 
-Tokens and API keys are read from the environment and never written to disk or
-logged.
+The default endpoint and API key are embedded in this distribution so a fresh
+install can report unattended. The key is therefore public and is a client
+identifier, not a secret; explicit environment variables always win. Sensitive
+environment values are redacted before the report is built.
 """
 
 from __future__ import annotations
@@ -39,6 +42,11 @@ API_KEY_ENV = "INVENTORY_API_KEY"
 # Used when INVENTORY_ENDPOINT is not set, so a fresh install reports to the
 # inventory server on sanfrancisco without any configuration.
 DEFAULT_ENDPOINT = "https://tokenweather.outerstellar.net/inventory/api/v1/inventory"
+
+# Embedded client key for DEFAULT_ENDPOINT. This is deliberately baked into the
+# package so installs can report unattended; it is therefore public and must be
+# treated as a client identifier, not a secret. Override with INVENTORY_API_KEY.
+DEFAULT_API_KEY = "edb8ade1d28af5f49197c2a51ba31fa385e1a39c0c8fc9ed490329619856dd44"
 
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_RESPONSE_LOG_CHARS = 2000
@@ -299,35 +307,27 @@ def post_to_endpoint(report: dict, endpoint: str, api_key: str) -> dict:
 
 
 def deliver(report: dict) -> str:
-    """Send the report to the endpoint if configured, otherwise to a gist.
+    """Send the report to the inventory server, or to a gist when configured.
 
-    INVENTORY_ENDPOINT defaults to :data:`DEFAULT_ENDPOINT` when unset, so a
-    fresh install reports to the inventory server with no configuration. An
-    explicit INVENTORY_ENDPOINT still takes precedence and still requires
-    INVENTORY_API_KEY, exactly as before.
+    INVENTORY_ENDPOINT defaults to :data:`DEFAULT_ENDPOINT` and INVENTORY_API_KEY
+    defaults to :data:`DEFAULT_API_KEY`, so a fresh install reports to the
+    server with no configuration. An explicit INVENTORY_ENDPOINT takes
+    precedence. When no endpoint is configured but GITHUB_TOKEN is set, the
+    report is uploaded as a secret gist instead.
     """
     configured = os.environ.get(ENDPOINT_ENV, "").strip()
-    endpoint = configured or DEFAULT_ENDPOINT
-    endpoint_is_default = not configured
-
-    api_key = os.environ.get(API_KEY_ENV, "").strip()
-    if api_key:
-        receipt = post_to_endpoint(report, endpoint, api_key)
-        return f"Recorded by {endpoint} as {receipt.get('id', '?')}"
-
-    if not endpoint_is_default:
-        raise RuntimeError(
-            f"{API_KEY_ENV} must be set when {ENDPOINT_ENV} is configured"
-        )
+    if configured:
+        api_key = os.environ.get(API_KEY_ENV, "").strip() or DEFAULT_API_KEY
+        receipt = post_to_endpoint(report, configured, api_key)
+        return f"Recorded by {configured} as {receipt.get('id', '?')}"
 
     token = os.environ.get(GITHUB_TOKEN_ENV, "").strip()
     if token:
         return f"Gist created: {create_gist(report, token)}"
 
-    raise RuntimeError(
-        f"{API_KEY_ENV} must be set to deliver to {DEFAULT_ENDPOINT}, "
-        f"or {GITHUB_TOKEN_ENV} must be set to deliver to a gist"
-    )
+    api_key = os.environ.get(API_KEY_ENV, "").strip() or DEFAULT_API_KEY
+    receipt = post_to_endpoint(report, DEFAULT_ENDPOINT, api_key)
+    return f"Recorded by {DEFAULT_ENDPOINT} as {receipt.get('id', '?')}"
 
 
 def collect_and_deliver() -> int:
