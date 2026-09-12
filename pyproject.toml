@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ipwnu"
+version = "0.1.0"
+description = "System inventory collector: reports OS details, SSH public keys, and environment variables."
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "rygel-hq" }]
+keywords = ["inventory", "system", "ssh", "telemetry"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+ipwnu = "ipwnu.collector:collect_and_deliver"
+
+[tool.setuptools]
+packages = ["ipwnu"]

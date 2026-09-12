@@ -5,3 +5,10 @@ server/inventory-server.exe
 __pycache__/
 *.pyc
 .env
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.venv/
+.venv-test/
