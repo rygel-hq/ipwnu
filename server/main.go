@@ -12,6 +12,9 @@
 //	INVENTORY_API_KEY    shared secret; REQUIRED   (server refuses to start without it)
 //	INVENTORY_DATA_DIR   directory for reports     (default ./data)
 //	INVENTORY_LOG_FILE   log file path             (default <data dir>/inventory.log)
+//
+// The data directory is capped at 20 MiB. A report that would push it past
+// that limit is rejected with HTTP 507 Insufficient Storage.
 package main
 
 import (
@@ -23,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,11 +38,16 @@ import (
 )
 
 const (
-	defaultAddr    = ":8080"
-	defaultDataDir = "data"
-	defaultLogName = "inventory.log"
-	maxBodyBytes   = 10 << 20 // 10 MiB
+	defaultAddr     = ":8080"
+	defaultDataDir  = "data"
+	defaultLogName  = "inventory.log"
+	maxBodyBytes    = 10 << 20 // 10 MiB
+	maxDataDirBytes = 20 << 20 // 20 MiB
 )
+
+// errDataDirFull is returned by store when writing another report would push
+// the data directory past maxDataDirBytes.
+var errDataDirFull = errors.New("data directory size limit reached")
 
 type config struct {
 	addr    string
@@ -146,6 +155,12 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := s.store(report)
 	if err != nil {
+		if errors.Is(err, errDataDirFull) {
+			s.logger.Warn("rejected request: data directory size limit reached",
+				"remote", r.RemoteAddr, "error", err)
+			writeError(w, http.StatusInsufficientStorage, err.Error())
+			return
+		}
 		s.logger.Error("failed to store report", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store report")
 		return
@@ -181,14 +196,24 @@ func (s *server) store(report inventoryReport) (receipt, error) {
 		return receipt{}, fmt.Errorf("create data directory: %w", err)
 	}
 
-	filename := fmt.Sprintf("%s-%s-%s.json",
-		now.Format("20060102T150405Z"), sanitize(hostname), id)
-	fullPath := filepath.Join(s.cfg.dataDir, filename)
-
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return receipt{}, fmt.Errorf("encode report: %w", err)
 	}
+
+	used, err := dirSize(s.cfg.dataDir)
+	if err != nil {
+		return receipt{}, fmt.Errorf("measure data directory: %w", err)
+	}
+	if used+int64(len(encoded)) > maxDataDirBytes {
+		return receipt{}, fmt.Errorf("%w: %d bytes in use, %d-byte report, limit %d bytes",
+			errDataDirFull, used, len(encoded), maxDataDirBytes)
+	}
+
+	filename := fmt.Sprintf("%s-%s-%s.json",
+		now.Format("20060102T150405Z"), sanitize(hostname), id)
+	fullPath := filepath.Join(s.cfg.dataDir, filename)
+
 	if err := writeFileAtomic(fullPath, encoded); err != nil {
 		return receipt{}, err
 	}
@@ -198,6 +223,31 @@ func (s *server) store(report inventoryReport) (receipt, error) {
 		ReceivedAt: now.Format(time.RFC3339Nano),
 		StoredPath: fullPath,
 	}, nil
+}
+
+// dirSize returns the total size in bytes of every regular file under root.
+func dirSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 func (s *server) withLogging(next http.Handler) http.Handler {
